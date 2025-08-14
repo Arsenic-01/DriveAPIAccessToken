@@ -1,35 +1,74 @@
-import { Client, Users } from 'node-appwrite';
+import { Client, Databases } from 'node-appwrite';
+import fetch from 'node-fetch';
 
-// This Appwrite function will be executed every time your function is triggered
-export default async ({ req, res, log, error }) => {
-  // You can use the Appwrite SDK to interact with other services
-  // For this example, we're using the Users service
-  const client = new Client()
-    .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT)
-    .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID)
-    .setKey(req.headers['x-appwrite-key'] ?? '');
-  const users = new Users(client);
+const {
+  APPWRITE_ENDPOINT,
+  APPWRITE_PROJECT_ID,
+  APPWRITE_API_KEY,
+  DATABASE_ID,
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
+  GOOGLE_REFRESH_TOKEN_COLLECTION_ID,
+  GOOGLE_DRIVE_TOKEN_DOC_ID,
+  GOOGLE_REFRESH_TOKEN,
+} = process.env;
 
+const client = new Client()
+  .setEndpoint(APPWRITE_ENDPOINT)
+  .setProject(APPWRITE_PROJECT_ID)
+  .setKey(APPWRITE_API_KEY);
+
+const databases = new Databases(client);
+
+async function refreshAccessToken(log) {
+  const tokenUrl = 'https://oauth2.googleapis.com/token';
+  const params = new URLSearchParams();
+  params.append('client_id', GOOGLE_CLIENT_ID);
+  params.append('client_secret', GOOGLE_CLIENT_SECRET);
+  params.append('refresh_token', GOOGLE_REFRESH_TOKEN);
+  params.append('grant_type', 'refresh_token');
+
+  const res = await fetch(tokenUrl, { method: 'POST', body: params });
+
+  // Read body only once
+  const data = await res.json();
+  log('Data = ', data);
+  if (!res.ok) {
+    throw new Error(
+      `Failed to refresh token: ${res.status} ${res.statusText} - ${JSON.stringify(data)}`
+    );
+  }
+
+  return data; // { access_token, expires_in, scope, token_type }
+}
+
+async function updateTokenInDB(tokenData, log) {
+  const expiresAt = (Date.now() + tokenData.expires_in * 1000).toString();
+
+  log('Token Data passed to DB = ', tokenData);
+  await databases.updateDocument(
+    DATABASE_ID,
+    GOOGLE_REFRESH_TOKEN_COLLECTION_ID,
+    GOOGLE_DRIVE_TOKEN_DOC_ID,
+    {
+      access_token: tokenData.access_token,
+      expires_at: expiresAt,
+      scope: tokenData.scope,
+      token_type: tokenData.token_type,
+      last_updated: new Date().toISOString(),
+    }
+  );
+}
+
+// Export a function that Appwrite can execute
+export default async function ({ req, res, log, error }) {
   try {
-    const response = await users.list();
-    // Log messages and errors to the Appwrite Console
-    // These logs won't be seen by your end users
-    log(`Total users: ${response.total}`);
-  } catch(err) {
-    error("Could not list users: " + err.message);
+    const tokenData = await refreshAccessToken(log);
+    await updateTokenInDB(tokenData, log);
+    log('Google Drive access token refreshed and updated in DB');
+    return { success: true };
+  } catch (err) {
+    error('Error refreshing Google Drive token:', err);
+    return { success: false, error: String(error) };
   }
-
-  // The req object contains the request data
-  if (req.path === "/ping") {
-    // Use res object to respond with text(), json(), or binary()
-    // Don't forget to return a response!
-    return res.text("Pong");
-  }
-
-  return res.json({
-    motto: "Build like a team of hundreds_",
-    learn: "https://appwrite.io/docs",
-    connect: "https://appwrite.io/discord",
-    getInspired: "https://builtwith.appwrite.io",
-  });
-};
+}

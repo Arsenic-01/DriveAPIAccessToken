@@ -69,6 +69,6 @@ export default async function ({ req, res, log, error }) {
     return { success: true };
   } catch (err) {
     error('Error refreshing Google Drive token:', err);
-    return { success: false, error: String(error) };
+    return { success: false, error: String(err) }; 
   }
 }
